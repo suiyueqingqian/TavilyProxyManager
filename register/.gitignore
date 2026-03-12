@@ -48,3 +48,12 @@ Thumbs.db
 api_keys.txt
 config.yaml
 failed.txt
+
+# Captcha model — only track inference code + onnx weights
+data/
+captcha_model/checkpoints/
+captcha_model/collect_data.py
+captcha_model/dataset.py
+captcha_model/train.py
+captcha_model/export_onnx.py
+captcha_model/evaluate.py

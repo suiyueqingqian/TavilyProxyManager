@@ -112,10 +112,27 @@ If you need to modify the code and build it yourself:
 - **Windows**: `.\scripts\build_all.ps1`
 - **Linux/macOS**: `./scripts/build_all.sh`
 
-**Local Image Build with Dockerfile**:
+**Build Docker image with Buildx**:
+
+If you use Buildx for the first time, initialize it once:
 
 ```bash
-docker build -t my-tavily-proxy .
+docker buildx create --use
+```
+
+Build locally (current host architecture):
+
+```bash
+docker buildx build --load -t my-tavily-proxy .
+```
+
+Build and push multi-arch image (`amd64` + `arm64`):
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/<owner>/<repo>:latest \
+  --push .
 ```
 
 ---

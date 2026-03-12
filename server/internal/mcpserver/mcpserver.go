@@ -16,6 +16,7 @@ import (
 type Dependencies struct {
 	MasterKey  *services.MasterKeyService
 	Proxy      *services.TavilyProxy
+	Stats      *services.StatsService
 	Stateless  bool
 	SessionTTL time.Duration
 }
@@ -46,11 +47,11 @@ func NewHandler(deps Dependencies) http.Handler {
 		Description: "Map a website's URL structure (via Tavily Proxy Pool)",
 		InputSchema: tavilyMapInputSchema,
 	}, http.MethodPost, "/map")
-	addProxyTool(server, deps.Proxy, &mcp.Tool{
+	addUsageTool(server, deps.Stats, &mcp.Tool{
 		Name:        "tavily-usage",
-		Description: "Get usage/quota info (via Tavily Proxy Pool)",
+		Description: "Get aggregated usage/quota info from local key statistics",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
-	}, http.MethodGet, "/usage")
+	})
 
 	base := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
 		return server
@@ -133,6 +134,57 @@ func addProxyTool(server *mcp.Server, proxy *services.TavilyProxy, tool *mcp.Too
 				&mcp.TextContent{Text: text},
 			},
 			StructuredContent: structured,
+		}, nil
+	})
+}
+
+func addUsageTool(server *mcp.Server, stats *services.StatsService, tool *mcp.Tool) {
+	server.AddTool(tool, func(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if stats == nil {
+			const msg = "stats service unavailable"
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: msg},
+				},
+				StructuredContent: map[string]any{"error": msg},
+			}, nil
+		}
+
+		s, err := stats.Get(ctx)
+		if err != nil {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: err.Error()},
+				},
+				StructuredContent: map[string]any{"error": err.Error()},
+			}, nil
+		}
+
+		payload := map[string]any{
+			"key": map[string]any{
+				"usage": s.TotalUsed,
+				"limit": s.TotalQuota,
+			},
+		}
+
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: err.Error()},
+				},
+				StructuredContent: map[string]any{"error": err.Error()},
+			}, nil
+		}
+
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: string(raw)},
+			},
+			StructuredContent: payload,
 		}, nil
 	})
 }

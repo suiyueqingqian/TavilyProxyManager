@@ -29,6 +29,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	mcpHandler := mcpserver.NewHandler(mcpserver.Dependencies{
 		MasterKey:  deps.MasterKeyService,
 		Proxy:      deps.TavilyProxy,
+		Stats:      deps.StatsService,
 		Stateless:  deps.Config.MCPStateless,
 		SessionTTL: deps.Config.MCPSessionTTL,
 	})
@@ -72,6 +73,11 @@ func NewRouter(deps Dependencies) http.Handler {
 		api.PUT("/settings/auto-sync", func(c *gin.Context) { handleSetAutoSync(c, deps.SettingsService) })
 		api.GET("/settings/log-cleanup", func(c *gin.Context) { handleGetLogCleanup(c, deps.SettingsService) })
 		api.PUT("/settings/log-cleanup", func(c *gin.Context) { handleSetLogCleanup(c, deps.SettingsService) })
+
+		api.GET("/settings/cache", func(c *gin.Context) { handleGetCache(c, deps.SettingsService) })
+		api.PUT("/settings/cache", func(c *gin.Context) { handleSetCache(c, deps.SettingsService) })
+		api.DELETE("/cache", func(c *gin.Context) { handleClearCache(c, deps.CacheService) })
+		api.GET("/cache/stats", func(c *gin.Context) { handleCacheStats(c, deps.SettingsService, deps.CacheService) })
 	}
 
 	r.NoRoute(func(c *gin.Context) {
@@ -300,15 +306,23 @@ func handleCreateKey(c *gin.Context, keys *services.KeyService) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
 		return
 	}
-	if strings.TrimSpace(body.Key) == "" {
+
+	key := strings.TrimSpace(body.Key)
+	if key == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_key"})
 		return
 	}
-	if strings.TrimSpace(body.Alias) == "" {
-		body.Alias = "Default"
+	if !strings.HasPrefix(key, "tvly-") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_key_format"})
+		return
 	}
 
-	created, err := keys.Create(c.Request.Context(), strings.TrimSpace(body.Key), strings.TrimSpace(body.Alias), body.TotalQuota)
+	alias := strings.TrimSpace(body.Alias)
+	if alias == "" {
+		alias = "Default"
+	}
+
+	created, err := keys.Create(c.Request.Context(), key, alias, body.TotalQuota)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "create_failed"})
 		return
@@ -773,6 +787,75 @@ func stripAPIKeyFromRawQuery(rawQuery string) (apiKey string, sanitized string) 
 	values.Del("apiKey")
 
 	return apiKey, values.Encode()
+}
+
+func handleGetCache(c *gin.Context, settings *services.SettingsService) {
+	enabled, err := settings.GetBool(c.Request.Context(), services.SettingCacheEnabled, false)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	ttl, err := settings.GetInt(c.Request.Context(), services.SettingCacheTTLSeconds, 43200)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":     enabled,
+		"ttl_seconds": ttl,
+	})
+}
+
+func handleSetCache(c *gin.Context, settings *services.SettingsService) {
+	var body struct {
+		Enabled    *bool `json:"enabled"`
+		TTLSeconds *int  `json:"ttl_seconds"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+	if body.Enabled == nil && body.TTLSeconds == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_fields"})
+		return
+	}
+	if body.TTLSeconds != nil {
+		if *body.TTLSeconds < 60 || *body.TTLSeconds > 604800 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_ttl_seconds"})
+			return
+		}
+		if err := settings.SetInt(c.Request.Context(), services.SettingCacheTTLSeconds, *body.TTLSeconds); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+			return
+		}
+	}
+	if body.Enabled != nil {
+		if err := settings.SetBool(c.Request.Context(), services.SettingCacheEnabled, *body.Enabled); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+			return
+		}
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func handleClearCache(c *gin.Context, cache *services.CacheService) {
+	deleted, err := cache.ClearAll(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
+}
+
+func handleCacheStats(c *gin.Context, settings *services.SettingsService, cache *services.CacheService) {
+	stats, err := cache.Stats(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	enabled, _ := settings.GetBool(c.Request.Context(), services.SettingCacheEnabled, false)
+	stats.Enabled = enabled
+	c.JSON(http.StatusOK, stats)
 }
 
 func parseUintParam(v string) (uint64, error) {

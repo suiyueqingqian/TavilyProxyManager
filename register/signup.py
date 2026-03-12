@@ -283,6 +283,21 @@ def recognize_captcha_with_vision(captcha_base64: str, config: dict) -> str:
 
     print(f"    PNG大小: {len(png_base64)} bytes")
 
+    # Local ONNX model recognition
+    captcha_mode = config.get("CAPTCHA_MODE", "api")
+    if captcha_mode == "local":
+        print("    使用本地模型识别...")
+        try:
+            from captcha_model import recognize_captcha_local
+            result = recognize_captcha_local(png_base64)
+            if result and len(result) == 6 and re.match(r'^[A-Za-z0-9]{6}$', result):
+                return result
+            print(f"    本地识别失败或结果无效 ({result})，回退到API...")
+        except ImportError:
+            print("    captcha_model 未安装，回退到API...")
+        except Exception as e:
+            print(f"    本地识别出错: {e}，回退到API...")
+
     api_url = f"{config['OPENAI_BASEURL']}/chat/completions"
     api_key = config['OPENAI_API_KEY']
     model = config['OPENAI_MODEL']
@@ -301,13 +316,13 @@ def recognize_captcha_with_vision(captcha_base64: str, config: dict) -> str:
                 "content": [
                     {
                         "type": "text",
-                        "text": "Please identify the text/characters shown in this captcha image. Output only the captcha text, nothing else. The captcha typically consists of 6 alphanumeric characters and is case-sensitive.",
+                        "text": "识别图片中的字符，区分大小写，直接返回字符串",
                     },
                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png_base64}"}},
                 ],
             }
         ],
-        "max_tokens": 50,
+        "max_tokens": 4096,
         "temperature": 0,
     }
 
